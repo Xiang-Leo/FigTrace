@@ -11,6 +11,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -47,6 +48,7 @@ class Metadata(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=100)
     notes: str = Field(default="", max_length=10000)
     version_note: str = Field(default="", max_length=1000)
+    stage: Literal["draft", "review", "final"] | None = None
 
 
 class GroupInput(BaseModel):
@@ -54,6 +56,7 @@ class GroupInput(BaseModel):
 
 
 class BulkInput(BaseModel):
+    stage: Literal["draft", "review", "final"] | None = None
     asset_ids: list[str] = Field(min_length=1, max_length=100)
     project: str | None = Field(default=None, max_length=200)
     tags: list[str] = Field(default_factory=list, max_length=100)
@@ -110,7 +113,7 @@ def create_app(
 
     app = FastAPI(
         title="FigTrace",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -257,6 +260,7 @@ def create_app(
         project: str | None = None,
         root_id: str | None = None,
         pending: bool = False,
+        stage: Literal["draft", "review", "final"] | None = None,
         grouped: bool = True,
         page: int = Query(1, ge=1),
         limit: int = Query(48, ge=1, le=100),
@@ -280,6 +284,9 @@ def create_app(
                 "EXISTS(SELECT 1 FROM assets r WHERE r.figure_id=f.id AND r.root_id=?)"
             )
             params.append(root_id)
+        if stage is not None:
+            conditions.append("f.stage=?")
+            params.append(stage)
         if pending:
             conditions.append("f.project='' AND f.tags='[]'")
         if grouped:
@@ -292,7 +299,7 @@ def create_app(
             "count"
         ]
         rows = library.query(
-            "SELECT a.*,f.title,f.project,f.tags,f.notes,f.preferred,(SELECT COUNT(*) FROM assets v WHERE v.figure_id=f.id) AS versions"
+            "SELECT a.*,f.title,f.project,f.tags,f.notes,f.stage,f.preferred,(SELECT COUNT(*) FROM assets v WHERE v.figure_id=f.id) AS versions"
             + source
             + where
             + " ORDER BY f.created DESC,a.created DESC LIMIT ? OFFSET ?",
@@ -305,7 +312,7 @@ def create_app(
     @app.get("/api/assets/{asset_id}")
     def detail(asset_id: str):
         asset = library.one(
-            "SELECT a.*,f.title,f.project,f.tags,f.notes,f.preferred FROM assets a JOIN figures f ON f.id=a.figure_id WHERE a.id=?",
+            "SELECT a.*,f.title,f.project,f.tags,f.notes,f.stage,f.preferred FROM assets a JOIN figures f ON f.id=a.figure_id WHERE a.id=?",
             (asset_id,),
         )
         asset["tags"] = json.loads(asset["tags"])
@@ -315,6 +322,10 @@ def create_app(
         )
         asset["links"] = library.query(
             "SELECT * FROM links WHERE asset_id=?", (asset_id,)
+        )
+        asset["locations"] = library.query(
+            "SELECT old_path,new_path,created FROM asset_locations WHERE asset_id=? ORDER BY created DESC LIMIT 50",
+            (asset_id,),
         )
         asset["path"] = str(library.asset_path(asset))
         asset["source_path"] = (
@@ -334,7 +345,7 @@ def create_app(
             if not row:
                 raise KeyError("图片不存在")
             db.execute(
-                "UPDATE figures SET title=?,project=?,tags=?,notes=? WHERE id=?",
+                "UPDATE figures SET title=?,project=?,tags=?,notes=?,stage=COALESCE(?,stage) WHERE id=?",
                 (
                     body.title.strip(),
                     body.project.strip(),
@@ -347,6 +358,7 @@ def create_app(
                         ensure_ascii=False,
                     ),
                     body.notes,
+                    body.stage,
                     row["figure_id"],
                 ),
             )
@@ -434,8 +446,13 @@ def create_app(
                     else figure["project"]
                 )
                 db.execute(
-                    "UPDATE figures SET tags=?,project=? WHERE id=?",
-                    (json.dumps(tags, ensure_ascii=False), project, figure["id"]),
+                    "UPDATE figures SET tags=?,project=?,stage=COALESCE(?,stage) WHERE id=?",
+                    (
+                        json.dumps(tags, ensure_ascii=False),
+                        project,
+                        body.stage,
+                        figure["id"],
+                    ),
                 )
         return {"updated": len(figures)}
 
@@ -443,7 +460,7 @@ def create_app(
     def ungroup(asset_id: str):
         with library.work_lock, library.db() as db:
             asset = db.execute(
-                "SELECT a.*,f.title,f.project,f.tags,f.notes FROM assets a JOIN figures f ON f.id=a.figure_id WHERE a.id=?",
+                "SELECT a.*,f.title,f.project,f.tags,f.notes,f.stage FROM assets a JOIN figures f ON f.id=a.figure_id WHERE a.id=?",
                 (asset_id,),
             ).fetchone()
             if not asset:
@@ -456,7 +473,7 @@ def create_app(
                 return {"ok": True}
             new_id = uid()
             db.execute(
-                "INSERT INTO figures VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO figures(id,title,project,tags,notes,preferred,created,stage) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     new_id,
                     Path(asset["name"]).stem,
@@ -465,6 +482,7 @@ def create_app(
                     asset["notes"],
                     asset_id,
                     time.time(),
+                    asset["stage"],
                 ),
             )
             db.execute("UPDATE assets SET figure_id=? WHERE id=?", (new_id, asset_id))
@@ -612,6 +630,10 @@ def create_app(
         if not path.is_dir() or library.excluded(path):
             raise ValueError("请选择可访问的素材目录")
         with library.work_lock, library.db() as db:
+            if db.execute(
+                "SELECT 1 FROM jobs WHERE status='running' AND kind IN ('scan','preview')"
+            ).fetchone():
+                raise ValueError("扫描或预览正在运行，请稍后重新定位目录")
             previous_path = Path(previous["path"])
             for link in db.execute("SELECT id,path FROM links").fetchall():
                 source_path = Path(link["path"])

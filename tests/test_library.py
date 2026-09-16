@@ -21,16 +21,6 @@ def png(color="green", dimensions=(80, 60)):
     return buffer.getvalue()
 
 
-@pytest.fixture
-def workspace(tmp_path):
-    data = tmp_path / "data"
-    sources = tmp_path / "sources"
-    sources.mkdir()
-    app = create_app(data, start_worker=False)
-    with TestClient(app, headers=HEADERS) as client:
-        yield client, app.state.library, sources
-
-
 def new_upload(client, data, name="project/figure.png", project="论文", tags=None):
     response = client.post(
         "/api/uploads",

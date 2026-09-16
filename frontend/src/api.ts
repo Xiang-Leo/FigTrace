@@ -55,6 +55,8 @@ export const when = (timestamp: number) =>
       })
     : "尚未运行";
 export type Asset = {
+  stage: string;
+  locations: { old_path: string; new_path: string; created: number }[];
   id: string;
   figure_id: string;
   title: string;
@@ -81,6 +83,21 @@ export type Asset = {
   relative_path: string;
   versions_list: Asset[];
   links: { id: string; path: string; label: string }[];
+};
+export const stageNames: Record<string, string> = {
+  draft: "草稿",
+  review: "待审核",
+  final: "定稿",
+};
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  archived: number;
+  figures: number;
+  assets: number;
+  stages: Record<string, number>;
 };
 export type Root = {
   id: string;

@@ -388,6 +388,10 @@ svg {
 .group-toggle {
   white-space: nowrap;
 }
+.search-toolbar > select {
+  width: auto;
+  min-width: 120px;
+}
 .result-toolbar {
   display: flex;
   align-items: center;
@@ -1544,4 +1548,39 @@ progress::-webkit-progress-value {
   .project-list {
     max-height: none;
   }
+}
+.project-overview {
+  border: 1px solid var(--line);
+  border-left: 4px solid;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 22px;
+}
+.project-overview p {
+  margin: 0 0 12px;
+}
+.project-overview small {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.figure-stage {
+  font-size: 10px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--surface);
+  white-space: nowrap;
+}
+.stage-final {
+  color: light-dark(#397348, #a4dcb3);
+}
+.stage-review {
+  color: light-dark(#987123, #e4c388);
+}
+.location-history {
+  padding: 16px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.7;
 }

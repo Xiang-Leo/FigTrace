@@ -386,9 +386,21 @@ class AIService:
 def register_features(app, lib, ai):
     @app.get("/api/projects")
     def projects():
-        return lib.query(
+        rows = lib.query(
             "SELECT p.*,(SELECT COUNT(*) FROM figures f WHERE f.project=p.name) AS figures,(SELECT COUNT(*) FROM assets a JOIN figures f ON f.id=a.figure_id WHERE f.project=p.name) AS assets FROM projects p ORDER BY archived,name"
         )
+        counts = lib.query(
+            "SELECT project,stage,COUNT(*) AS count FROM figures GROUP BY project,stage"
+        )
+        by_project = {}
+        for count in counts:
+            by_project.setdefault(count["project"], {})[count["stage"]] = count["count"]
+        for row in rows:
+            row["stages"] = {
+                stage: by_project.get(row["name"], {}).get(stage, 0)
+                for stage in ("draft", "review", "final")
+            }
+        return rows
 
     @app.post("/api/projects")
     def create_project(body: ProjectInput):

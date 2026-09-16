@@ -12,7 +12,7 @@ import {
   ChevronRight,
   Columns2,
 } from "lucide-react";
-import { api, json, size, when, statusName, Asset } from "./api";
+import { api, json, size, when, statusName, stageNames, Asset } from "./api";
 
 export function Preview({
   asset,
@@ -139,6 +139,7 @@ export function Detail({
         json("PUT", {
           title: data.get("title"),
           project: data.get("project"),
+          stage: data.get("stage"),
           tags: String(data.get("tags"))
             .split(/[,，]/)
             .map((s) => s.trim())
@@ -287,6 +288,16 @@ export function Detail({
                   defaultValue={asset.tags.join(", ")}
                   placeholder="用逗号分隔"
                 />
+              </label>
+              <label>
+                Figure 状态
+                <select name="stage" defaultValue={asset.stage}>
+                  {Object.entries(stageNames).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 本版本说明
@@ -475,6 +486,19 @@ export function Detail({
               )}
             </div>
           </dialog>
+          {!!asset.locations?.length && (
+            <details className="location-history">
+              <summary>文件移动记录（最近 50 条）</summary>
+              {asset.locations.map((location, i) => (
+                <p key={i}>
+                  <small>{when(location.created)}</small>
+                  <br />
+                  {location.old_path}
+                  <br />→ {location.new_path}
+                </p>
+              ))}
+            </details>
+          )}
         </>
       )}
     </aside>

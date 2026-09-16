@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { X, FolderPlus, Sparkles } from "lucide-react";
-import { api, json, when } from "./api";
+import { api, json, when, stageNames } from "./api";
 
 type Project = {
+  stages: Record<string, number>;
   id: string;
   name: string;
   description: string;
@@ -160,6 +161,11 @@ export function ProjectManager({
                   <p>
                     {p.figures} 张 Figure · {p.assets} 个文件版本
                   </p>
+                  <p className="subtle">
+                    {Object.entries(stageNames)
+                      .map(([key, label]) => `${label} ${p.stages?.[key] || 0}`)
+                      .join(" · ")}
+                  </p>
                   <div className="button-row">
                     <button onClick={() => onOpen(p.name)}>打开项目</button>
                     <button disabled={busy} onClick={() => edit(p)}>
@@ -308,12 +314,14 @@ function Suggestion({
 
 export function AIWorkspace({
   initialTab,
+  initialProject = "",
   assetIds,
   onClose,
   onChange,
   onSelect,
 }: {
   initialTab: string;
+  initialProject?: string;
   assetIds: string[];
   onClose: () => void;
   onChange: (assetId?: string) => void;
@@ -340,6 +348,11 @@ export function AIWorkspace({
       .then(([c, p, t]) => {
         setConfigs(c);
         setProjects(p);
+        setProject(
+          p.find(
+            (item: Project) => item.name === initialProject && !item.archived,
+          )?.id || "",
+        );
         setTasks(t);
       })
       .catch((e) => setError(e.message));

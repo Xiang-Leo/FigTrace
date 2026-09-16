@@ -21,6 +21,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { api, json, Asset, Overview, Root, ApiError, statusName } from "./api";
+import { stageNames, ProjectSummary } from "./api";
 import { ImportDialog } from "./ImportDialog";
 import { Detail, Preview } from "./Detail";
 import { Settings } from "./Settings";
@@ -42,6 +43,8 @@ function App() {
     [search, setSearch] = useState(""),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState({ type: "all", value: "" }),
+    [stage, setStage] = useState(""),
+    [projectInfo, setProjectInfo] = useState<ProjectSummary | null>(null),
     [grouped, setGrouped] = useState(true),
     [selected, setSelected] = useState<string | null>(null),
     [checked, setChecked] = useState<Set<string>>(new Set()),
@@ -62,6 +65,7 @@ function App() {
   const bulkDialog = useRef<HTMLDialogElement>(null),
     [bulkOpen, setBulkOpen] = useState(false),
     [bulkProject, setBulkProject] = useState(""),
+    [bulkStage, setBulkStage] = useState(""),
     [bulkTags, setBulkTags] = useState("");
   useEffect(() => {
     api("/session")
@@ -106,15 +110,22 @@ function App() {
       if (filter.type === "project") params.set("project", filter.value);
       if (filter.type === "root") params.set("root_id", filter.value);
       if (filter.type === "pending") params.set("pending", "true");
+      if (stage) params.set("stage", stage);
       try {
-        const [list, summary] = await Promise.all([
+        const [list, summary, projects] = await Promise.all([
           api("/assets?" + params),
           api("/overview"),
+          filter.type === "project"
+            ? api<ProjectSummary[]>("/projects")
+            : Promise.resolve([]),
         ]);
         if (request !== requestVersion.current) return;
         setAssets(list.items);
         setTotal(list.total);
         setOverview(summary);
+        setProjectInfo(
+          projects.find((p: ProjectSummary) => p.name === filter.value) || null,
+        );
         setError("");
       } catch (e) {
         if (e instanceof ApiError && e.status === 401)
@@ -124,7 +135,7 @@ function App() {
         if (request === requestVersion.current) setLoading(false);
       }
     },
-    [session?.authenticated, query, page, grouped, filter, revision],
+    [session?.authenticated, query, page, grouped, filter, revision, stage],
   );
   useEffect(() => {
     refresh();
@@ -138,6 +149,8 @@ function App() {
     setFilter({ type, value });
     setPage(1);
     setChecked(new Set());
+    setStage("");
+    setProjectInfo(null);
   }
   function openImport(mode = "upload") {
     setImportMode(mode);
@@ -184,6 +197,7 @@ function App() {
         json("POST", {
           asset_ids: Array.from(checked),
           project: bulkProject || null,
+          stage: bulkStage || null,
           tags: bulkTags
             .split(/[,，]/)
             .map((t) => t.trim())
@@ -194,9 +208,10 @@ function App() {
       setChecked(new Set());
       setSelected(null);
       setBulkProject("");
+      setBulkStage("");
       setBulkTags("");
       update();
-      setToast("已批量更新项目与标签");
+      setToast("已批量更新项目、状态与标签");
     } catch (e) {
       setError((e as Error).message);
       setBulkOpen(false);
@@ -357,7 +372,7 @@ function App() {
             >
               {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
             </button>
-            <span>FigTrace 0.2</span>
+            <span>FigTrace 0.3</span>
             {session.password_required && (
               <button
                 className="icon-button"
@@ -384,6 +399,39 @@ function App() {
             添加素材
           </button>
         </header>
+        {filter.type === "project" && projectInfo && (
+          <section
+            className="project-overview"
+            style={{ borderLeftColor: projectInfo.color }}
+          >
+            <p>
+              {projectInfo.description ||
+                "在这个项目中整理图片、追踪版本和确认定稿。"}
+            </p>
+            <div className="button-row">
+              <span>
+                {projectInfo.figures} 张 Figure · {projectInfo.assets} 个版本
+                {projectInfo.archived ? " · 已归档" : ""}
+              </span>
+              {Object.entries(stageNames).map(([key, label]) => (
+                <button
+                  key={key}
+                  className={stage === key ? "primary" : ""}
+                  onClick={() => {
+                    setStage(stage === key ? "" : key);
+                    setPage(1);
+                    setChecked(new Set());
+                  }}
+                >
+                  {label} {projectInfo.stages[key] || 0}
+                </button>
+              ))}
+            </div>
+            <small>
+              从此处添加素材或生成图片，会默认归入当前项目；已有上传队列保留原设置。
+            </small>
+          </section>
+        )}
         <div className="search-toolbar">
           <div className="search-field">
             <Search size={18} />
@@ -416,6 +464,22 @@ function App() {
             <Layers size={16} />
             折叠版本
           </label>
+          <select
+            aria-label="筛选 Figure 状态"
+            value={stage}
+            onChange={(e) => {
+              setStage(e.target.value);
+              setPage(1);
+              setChecked(new Set());
+            }}
+          >
+            <option value="">全部状态</option>
+            {Object.entries(stageNames).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
         </div>
         {error && (
           <div className="error workspace-error" role="alert">
@@ -502,6 +566,9 @@ function App() {
                     </span>
                     <div className="asset-bottom">
                       <span>{asset.project || "待整理"}</span>
+                      <span className={"figure-stage stage-" + asset.stage}>
+                        {stageNames[asset.stage]}
+                      </span>
                       {["failed", "unsupported", "missing"].includes(
                         asset.preview,
                       ) && (
@@ -618,6 +685,7 @@ function App() {
       {modal.startsWith("ai-") && (
         <AIWorkspace
           initialTab={modal.slice(3)}
+          initialProject={filter.type === "project" ? filter.value : ""}
           assetIds={aiSelection}
           onClose={() => setModal("")}
           onChange={(assetId) => {
@@ -641,6 +709,7 @@ function App() {
         onRefresh={update}
         overview={overview}
         initialMode={importMode}
+        initialProject={filter.type === "project" ? filter.value : ""}
         relocate={relocate}
       />
       <Settings
@@ -663,7 +732,7 @@ function App() {
         <h2>合并为同一张 Figure？</h2>
         <p>
           将选中 Figure
-          的全部版本归到一起，合并标签并保留备注。第一项的名称和项目作为合并结果，原文件保持原位。
+          的全部版本归到一起，合并标签并保留备注。第一项的名称、项目和状态作为合并结果，原文件保持原位。
         </p>
         <p className="subtle">之后可在“版本”中将某个文件重新独立成 Figure。</p>
         <div className="modal-actions">
@@ -699,6 +768,20 @@ function App() {
               onChange={(e) => setBulkTags(e.target.value)}
               placeholder="用逗号分隔"
             />
+          </label>
+          <label style={{ marginTop: 14 }}>
+            Figure 状态
+            <select
+              value={bulkStage}
+              onChange={(e) => setBulkStage(e.target.value)}
+            >
+              <option value="">保留原状态</option>
+              {Object.entries(stageNames).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
           </label>
           <div className="modal-actions">
             <button type="button" onClick={() => setBulkOpen(false)}>

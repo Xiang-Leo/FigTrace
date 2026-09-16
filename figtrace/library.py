@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',color TEXT NOT NULL DEFAULT '#6b7c61',archived INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS ai_tasks(id TEXT PRIMARY KEY,kind TEXT NOT NULL,asset_id TEXT,project_id TEXT,prompt TEXT NOT NULL DEFAULT '',model TEXT NOT NULL,base_url TEXT NOT NULL,config_revision TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}',status TEXT NOT NULL DEFAULT 'queued',result TEXT NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '',created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ai_tasks_asset ON ai_tasks(asset_id);
+CREATE TABLE IF NOT EXISTS asset_locations(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),old_path TEXT NOT NULL,new_path TEXT NOT NULL,created REAL NOT NULL);
 """
 
 
@@ -88,6 +89,7 @@ class Library:
         )
         self.lock = threading.RLock()
         self.work_lock = threading.RLock()
+        self.job_lock = threading.Lock()
         self.stop = threading.Event()
         self.threads: list[threading.Thread] = []
         with self.db() as db:
@@ -120,6 +122,12 @@ class Library:
             )
 
     def migrate_projects(self, db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(figures)")}
+        if "stage" not in columns:
+            db.execute(
+                "ALTER TABLE figures ADD COLUMN stage TEXT NOT NULL DEFAULT 'draft'"
+            )
+        db.execute("CREATE INDEX IF NOT EXISTS figure_stage ON figures(stage)")
         db.execute(
             "INSERT OR IGNORE INTO projects(id,name,created) SELECT lower(hex(randomblob(16))),project,? FROM (SELECT project FROM figures UNION SELECT project FROM roots UNION SELECT project FROM uploads) WHERE project<>''",
             (time.time(),),
@@ -242,11 +250,20 @@ class Library:
         return path
 
     def index_file(self, root_id, relative_path, project="", tags=None, sha=None):
+        with self.work_lock:
+            return self._index_file(root_id, relative_path, project, tags, sha)
+
+    def _index_file(self, root_id, relative_path, project="", tags=None, sha=None):
         root = self.one("SELECT * FROM roots WHERE id=?", (root_id,))
         ext = Path(relative_path).suffix.lstrip(".").lower()
         path = Path(root["path"]) / (
             sha + "." + ext if root["kind"] == "managed" else relative_path
         )
+        if (
+            not self.permitted(path).is_relative_to(Path(root["path"]).resolve())
+            or path.is_symlink()
+        ):
+            raise ValueError("素材路径已变化或超出登记目录")
         info = path.stat()
         with self.db() as db:
             project = self.ensure_project(db, project)
@@ -311,6 +328,7 @@ class Library:
                 )
             raise ValueError("目录不可访问，已保留现有记录")
         seen, skipped, errors = set(), 0, []
+        discovered = []
         backup_dir = Path(self.setting("backup")["directory"]).expanduser().resolve()
 
         def scan_error(error):
@@ -347,10 +365,23 @@ class Library:
                     if offline and not root["allow_remote"]:
                         skipped += 1
                         continue
-                    self.index_file(root_id, relative, root["project"])
+                    discovered.append(relative)
                 except (OSError, ValueError) as error:
                     errors.append(f"{relative}: {error}")
-        with self.db() as db:
+        moved = self.reconcile_moves(root, discovered) if not errors else 0
+        for relative in discovered:
+            if self.stop.is_set():
+                raise ValueError("扫描因服务关闭而中断，可重新扫描")
+            try:
+                # Fetch the current project: it may have been renamed during traversal.
+                with self.work_lock:
+                    project = self.one(
+                        "SELECT project FROM roots WHERE id=?", (root_id,)
+                    )["project"]
+                    self.index_file(root_id, relative, project)
+            except (OSError, ValueError) as error:
+                errors.append(f"{relative}: {error}")
+        with self.work_lock, self.db() as db:
             # Incomplete traversal cannot prove that a file has disappeared.
             if not errors:
                 for row in db.execute(
@@ -366,9 +397,127 @@ class Library:
                 ("partial" if errors or skipped else "ready", time.time(), root_id),
             )
         return (
-            f"扫描 {len(seen)} 个素材；跳过 {skipped} 个未下载文件；{len(errors)} 个读取错误"
+            f"扫描 {len(seen)} 个素材；找回 {moved} 个移动或改名文件；跳过 {skipped} 个未下载文件；{len(errors)} 个读取错误"
             + (f"。{errors[0]}" if errors else "")
         )
+
+    def reconcile_moves(self, root, discovered):
+        """Only reconnect unique content matches whose old location is provably absent."""
+        existing = {
+            r["relative_path"]
+            for r in self.query(
+                "SELECT relative_path FROM assets WHERE root_id=?", (root["id"],)
+            )
+        }
+        discovered = [relative for relative in discovered if relative not in existing]
+        if not discovered:
+            return 0
+        missing = {}
+        for asset in self.query(
+            "SELECT a.*,r.path AS root_path FROM assets a JOIN roots r ON r.id=a.root_id WHERE r.kind='linked' AND a.sha256 IS NOT NULL"
+        ):
+            try:
+                base = self.permitted(Path(asset["root_path"]))
+                old = self.asset_path(asset)
+                # An offline directory is not evidence of a move. Permission errors are
+                # likewise not treated as absence.
+                if not base.is_dir():
+                    continue
+                try:
+                    old.stat()
+                    continue
+                except FileNotFoundError:
+                    pass
+                missing.setdefault(
+                    (asset["size"], asset["format"], asset["sha256"]), []
+                ).append(asset)
+            except (OSError, ValueError):
+                continue
+        sizes = {(key[0], key[1]) for key in missing}
+        matches = {}
+        for relative in discovered:
+            if relative in existing:
+                continue
+            path = Path(root["path"]) / relative
+            try:
+                if path.is_symlink() or not self.permitted(path).is_relative_to(
+                    Path(root["path"]).resolve()
+                ):
+                    continue
+                info = path.stat()
+                ext = path.suffix.lstrip(".").lower()
+                if (info.st_size, ext) not in sizes:
+                    continue
+                digest = fingerprint(path)
+                after = path.stat()
+                if (info.st_size, info.st_mtime_ns) != (
+                    after.st_size,
+                    after.st_mtime_ns,
+                ):
+                    continue
+                key = (info.st_size, ext, digest)
+                if key in missing:
+                    matches.setdefault(key, []).append((relative, info))
+            except (OSError, ValueError):
+                continue
+        moved = 0
+        for key, candidates in matches.items():
+            if len(candidates) != 1 or len(missing[key]) != 1:
+                continue
+            old = missing[key][0]
+            relative, info = candidates[0]
+            old_path = Path(old["root_path"]) / old["relative_path"]
+            new_path = Path(root["path"]) / relative
+            with self.work_lock, self.db() as db:
+                current_root = db.execute(
+                    "SELECT path FROM roots WHERE id=?", (root["id"],)
+                ).fetchone()
+                current = db.execute(
+                    "SELECT * FROM assets WHERE id=?", (old["id"],)
+                ).fetchone()
+                if (
+                    not current_root
+                    or current_root["path"] != root["path"]
+                    or not current
+                    or current["relative_path"] != old["relative_path"]
+                    or current["root_id"] != old["root_id"]
+                ):
+                    continue
+                if not Path(old["root_path"]).is_dir():
+                    continue
+                try:
+                    old_path.stat()
+                    continue
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    continue
+                try:
+                    latest = new_path.stat()
+                except OSError:
+                    continue
+                if (
+                    latest.st_size != info.st_size
+                    or latest.st_mtime_ns != info.st_mtime_ns
+                ):
+                    continue
+                if db.execute(
+                    "SELECT 1 FROM assets WHERE root_id=? AND relative_path=?",
+                    (root["id"], relative),
+                ).fetchone():
+                    continue
+                # Preserve Figure identity, annotations, versions and source links.
+                db.execute(
+                    "UPDATE assets SET root_id=?,relative_path=?,name=?,mtime=?,preview='queued',error='' WHERE id=?",
+                    (root["id"], relative, new_path.name, info.st_mtime, old["id"]),
+                )
+                db.execute(
+                    "INSERT INTO asset_locations VALUES (?,?,?,?,?)",
+                    (uid(), old["id"], str(old_path), str(new_path), time.time()),
+                )
+                moved += 1
+            self.enqueue("preview", old["id"])
+        return moved
 
     def preview(self, asset_id):
         asset = self.one("SELECT * FROM assets WHERE id=?", (asset_id,))
@@ -381,6 +530,7 @@ class Library:
                 )
             return "原文件不可访问"
         output = self.data_dir / "cache" / (asset_id + ".jpg")
+        staging = output.with_name(asset_id + "-" + uid() + ".partial.jpg")
         try:
             if asset["root_id"] != "managed":
                 digest = fingerprint(path)
@@ -402,8 +552,9 @@ class Library:
                     other = duplicates[0]
                     cached = self.data_dir / "cache" / (other["id"] + ".jpg")
                     if cached.is_file():
-                        shutil.copyfile(cached, output)
-                        with self.db() as db:
+                        shutil.copyfile(cached, staging)
+                        with self.work_lock, self.db() as db:
+                            staging.replace(output)
                             db.execute(
                                 "UPDATE assets SET preview='ready',error='',width=?,height=?,pages=?,mode=? WHERE id=?",
                                 (
@@ -420,7 +571,7 @@ class Library:
                 "-m",
                 "figtrace.preview",
                 str(path),
-                str(output),
+                str(staging),
                 "0",
             ]
             process = subprocess.run(
@@ -429,7 +580,12 @@ class Library:
             if process.returncode:
                 raise ValueError(process.stderr[-800:] or "预览转换失败")
             result = json.loads(process.stdout)
-            with self.db() as db:
+            current = path.stat()
+            if current.st_size != asset["size"] or current.st_mtime != asset["mtime"]:
+                raise ValueError("预览期间原文件发生变化，请重新扫描")
+            with self.work_lock, self.db() as db:
+                if result["status"] == "ready":
+                    staging.replace(output)
                 db.execute(
                     "UPDATE assets SET preview=?,error=?,width=?,height=?,pages=?,mode=? WHERE id=?",
                     (
@@ -450,6 +606,8 @@ class Library:
                     (str(error)[:800], asset_id),
                 )
             return str(error)[:800]
+        finally:
+            staging.unlink(missing_ok=True)
 
     def create_upload(self, relative_path, size, sha256, project, tags):
         relative_path = safe_relative(relative_path)
@@ -598,6 +756,10 @@ class Library:
         if Path(name).name != name or not name.endswith(".zip"):
             raise ValueError("备份名称无效")
         with self.work_lock, self.lock:
+            if self.query(
+                "SELECT id FROM jobs WHERE status='running' AND kind IN ('scan','preview')"
+            ):
+                raise ValueError("扫描或预览正在运行，请完成后再恢复备份")
             if self.query("SELECT id FROM ai_tasks WHERE status='running'"):
                 raise ValueError("AI 任务运行中，请完成后再恢复备份")
             current_config = self.setting("backup")
@@ -665,9 +827,9 @@ class Library:
             return {"safety_backup": safety_copy}
 
     def run_one(self):
-        # One converter at a time bounds RAM and keeps restoration coordinated with jobs.
-        with self.work_lock:
-            with self.db() as db:
+        # Serialize background converters without blocking interactive upload writes.
+        with self.job_lock:
+            with self.work_lock, self.db() as db:
                 row = db.execute(
                     "SELECT * FROM jobs WHERE status='queued' ORDER BY created LIMIT 1"
                 ).fetchone()

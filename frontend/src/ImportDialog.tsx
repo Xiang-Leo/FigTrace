@@ -98,6 +98,7 @@ export function ImportDialog({
   onRefresh,
   overview,
   initialMode = "upload",
+  initialProject = "",
   relocate,
 }: {
   open: boolean;
@@ -105,6 +106,7 @@ export function ImportDialog({
   onRefresh: () => void;
   overview: Overview | null;
   initialMode?: string;
+  initialProject?: string;
   relocate: Root | null;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
@@ -138,12 +140,18 @@ export function ImportDialog({
       setMode(initialMode);
       setError("");
       setInfo("");
+      if (
+        !running.current &&
+        queueRef.current.every((item) => item.status === "已入库")
+      ) {
+        setProject(relocate?.project || initialProject);
+      }
       if (relocate) {
         setDirectory(relocate.path);
         setRemote(Boolean(relocate.allow_remote));
       }
     } else dialog.current?.close();
-  }, [open, initialMode, relocate]);
+  }, [open, initialMode, relocate, initialProject]);
   useEffect(() => {
     if (open && mode === "directory") browse(relocate?.path || "");
   }, [open, mode]);
