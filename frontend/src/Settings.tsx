@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, Download, RotateCw, Save, X } from "lucide-react";
+import { AutoFigureSettings } from "./AutoFigure";
 import {
   api,
   json,
@@ -76,7 +77,7 @@ export function Settings({
       <header className="modal-header">
         <div>
           <span className="eyebrow">LIBRARY SETTINGS</span>
-          <h2>目录、任务与备份</h2>
+          <h2>目录、服务与备份</h2>
         </div>
         <button className="icon-button" onClick={onClose} aria-label="关闭设置">
           <X size={20} />
@@ -92,6 +93,7 @@ export function Settings({
           {notice}
         </div>
       )}
+      <AutoFigureSettings active={open} />
       <section className="settings-section">
         <h3>素材目录</h3>
         {overview?.roots.map((root) => (

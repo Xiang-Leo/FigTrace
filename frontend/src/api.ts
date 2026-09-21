@@ -55,6 +55,12 @@ export const when = (timestamp: number) =>
       })
     : "尚未运行";
 export type Asset = {
+  derivations?: {
+    parent_asset_id: string;
+    kind: string;
+    metadata: string;
+    created: number;
+  }[];
   stage: string;
   locations: { old_path: string; new_path: string; created: number }[];
   id: string;

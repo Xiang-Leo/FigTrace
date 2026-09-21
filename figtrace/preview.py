@@ -1,5 +1,6 @@
 """Resource-bounded image conversion in a disposable subprocess."""
 
+import io
 import json
 import shutil
 import subprocess
@@ -34,9 +35,18 @@ def render(source: Path, destination: Path, page=0):
                 "mode": "PDF 页面（pt）",
             }
     elif ext == ".svg":
-        return {
-            "status": "unsupported",
-            "error": "SVG 已入库；此版本暂未启用 SVG 预览转换器",
+        from figtrace.svg import MAX_SVG_BYTES, render_svg
+
+        if source.stat().st_size > MAX_SVG_BYTES:
+            raise ValueError("SVG 文件超过 12 MiB")
+        if page != 0:
+            raise ValueError("页码超出范围")
+        image = Image.open(io.BytesIO(render_svg(source.read_bytes())))
+        meta = {
+            "pages": 1,
+            "width": image.width,
+            "height": image.height,
+            "mode": "SVG 安全预览",
         }
     elif ext == ".eps":
         gs = shutil.which("gs") or shutil.which("gswin64c")

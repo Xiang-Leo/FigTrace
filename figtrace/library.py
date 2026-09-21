@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQU
 CREATE TABLE IF NOT EXISTS ai_tasks(id TEXT PRIMARY KEY,kind TEXT NOT NULL,asset_id TEXT,project_id TEXT,prompt TEXT NOT NULL DEFAULT '',model TEXT NOT NULL,base_url TEXT NOT NULL,config_revision TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}',status TEXT NOT NULL DEFAULT 'queued',result TEXT NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '',created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ai_tasks_asset ON ai_tasks(asset_id);
 CREATE TABLE IF NOT EXISTS asset_locations(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),old_path TEXT NOT NULL,new_path TEXT NOT NULL,created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS autofigure_tasks(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'queued',remote_id TEXT NOT NULL DEFAULT '',output_asset_id TEXT,config TEXT NOT NULL,input_sha256 TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',message TEXT NOT NULL DEFAULT '',created REAL NOT NULL,updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS asset_derivations(request_id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),parent_asset_id TEXT NOT NULL REFERENCES assets(id),kind TEXT NOT NULL,sha256 TEXT NOT NULL,metadata TEXT NOT NULL DEFAULT '{}',created REAL NOT NULL);
 """
 
 
@@ -100,6 +102,9 @@ class Library:
                 "UPDATE ai_tasks SET status='failed',error='服务已重启；为避免重复计费，请检查服务商记录后重新提交' WHERE status IN ('queued','running')"
             )
             db.execute("UPDATE jobs SET status='queued' WHERE status='running'")
+            db.execute(
+                "UPDATE autofigure_tasks SET status='failed',error='提交期间服务重启，远端可能已启动；请检查 AutoFigure 记录，未自动重发' WHERE status='running' AND remote_id=''"
+            )
             db.execute(
                 "INSERT OR IGNORE INTO roots(id,path,name,kind) VALUES ('managed',?,'上传素材','managed')",
                 (str(self.data_dir / "originals"),),
@@ -762,6 +767,8 @@ class Library:
                 raise ValueError("扫描或预览正在运行，请完成后再恢复备份")
             if self.query("SELECT id FROM ai_tasks WHERE status='running'"):
                 raise ValueError("AI 任务运行中，请完成后再恢复备份")
+            if self.query("SELECT id FROM autofigure_tasks WHERE status='running'"):
+                raise ValueError("AutoFigure 任务运行中，请完成后再恢复备份")
             current_config = self.setting("backup")
             source = Path(current_config["directory"]).expanduser().resolve() / name
             with (
@@ -810,6 +817,9 @@ class Library:
                 self.migrate_projects(db)
                 db.execute(
                     "UPDATE ai_tasks SET status='failed',error='备份恢复后不会自动重发 AI 请求' WHERE status IN ('queued','running')"
+                )
+                db.execute(
+                    "UPDATE autofigure_tasks SET status='failed',error='备份恢复后不会自动重发 AutoFigure 请求；可检查已有远端任务' WHERE status IN ('queued','running')"
                 )
                 db.execute(
                     "UPDATE roots SET path=? WHERE id='managed'",

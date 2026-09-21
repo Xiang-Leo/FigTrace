@@ -13,6 +13,7 @@ import {
   Columns2,
 } from "lucide-react";
 import { api, json, size, when, statusName, stageNames, Asset } from "./api";
+import { AutoFigureTools } from "./AutoFigure";
 
 export function Preview({
   asset,
@@ -221,6 +222,15 @@ export function Detail({
             )}
           </div>
           <button onClick={onAI}>✦ AI 分类与建议</button>
+          <AutoFigureTools
+            key={asset.id}
+            asset={asset}
+            onChange={() => {
+              void load();
+              onChange();
+            }}
+            onSelect={onSelect}
+          />
           {asset.error && <div className="notice">{asset.error}</div>}
           {asset.mode && <p className="subtle">{asset.mode}</p>}
           <div className="button-row">
@@ -421,6 +431,25 @@ export function Detail({
                 </button>
               </form>
             </>
+          )}
+          {!!asset.derivations?.length && (
+            <section className="autofigure-provenance">
+              <span className="eyebrow">版本来源</span>
+              {asset.derivations.map((derivation) => (
+                <div key={derivation.parent_asset_id + derivation.created}>
+                  <p>
+                    {derivation.kind === "autofigure"
+                      ? "AutoFigure 重建"
+                      : "SVG 编辑保存"}{" "}
+                    · {when(derivation.created)}
+                  </p>
+                  <button onClick={() => onSelect(derivation.parent_asset_id)}>
+                    <Link2 size={14} />
+                    查看来源版本
+                  </button>
+                </div>
+              ))}
+            </section>
           )}
           <div className="location">
             <span className="eyebrow">文件位置</span>

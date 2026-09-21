@@ -22,6 +22,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .library import Library, uid
 from .features import AIService, register_features
+from .autofigure import AutoFigureService, register_autofigure
 
 
 class Login(BaseModel):
@@ -97,6 +98,7 @@ def create_app(
 ):
     library = Library(data_dir or default_data_dir(), allowed_roots)
     ai_service = AIService(library)
+    autofigure_service = AutoFigureService(library)
     password = password if password is not None else os.getenv("FIGTRACE_PASSWORD", "")
     if not local_mode and (not password or allowed_roots is None):
         raise ValueError("远程服务必须配置 FIGTRACE_PASSWORD 和 FIGTRACE_ALLOWED_ROOTS")
@@ -108,6 +110,7 @@ def create_app(
         if start_worker:
             library.start()
             ai_service.start()
+            autofigure_service.start()
         yield
         library.close()
 
@@ -122,6 +125,8 @@ def create_app(
     app.state.library = library
     app.state.ai_service = ai_service
     register_features(app, library, ai_service)
+    app.state.autofigure_service = autofigure_service
+    register_autofigure(app, library, autofigure_service)
 
     @app.exception_handler(ValueError)
     async def value_error(_, exc):
@@ -325,6 +330,10 @@ def create_app(
         )
         asset["locations"] = library.query(
             "SELECT old_path,new_path,created FROM asset_locations WHERE asset_id=? ORDER BY created DESC LIMIT 50",
+            (asset_id,),
+        )
+        asset["derivations"] = library.query(
+            "SELECT parent_asset_id,kind,metadata,created FROM asset_derivations WHERE asset_id=?",
             (asset_id,),
         )
         asset["path"] = str(library.asset_path(asset))
