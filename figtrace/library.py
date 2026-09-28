@@ -49,6 +49,12 @@ CREATE INDEX IF NOT EXISTS ai_tasks_asset ON ai_tasks(asset_id);
 CREATE TABLE IF NOT EXISTS asset_locations(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),old_path TEXT NOT NULL,new_path TEXT NOT NULL,created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS autofigure_tasks(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'queued',remote_id TEXT NOT NULL DEFAULT '',output_asset_id TEXT,config TEXT NOT NULL,input_sha256 TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',message TEXT NOT NULL DEFAULT '',created REAL NOT NULL,updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS asset_derivations(request_id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),parent_asset_id TEXT NOT NULL REFERENCES assets(id),kind TEXT NOT NULL,sha256 TEXT NOT NULL,metadata TEXT NOT NULL DEFAULT '{}',created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS classifications(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),origin TEXT NOT NULL,category TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',description TEXT NOT NULL DEFAULT '',source_fingerprint TEXT NOT NULL,source_sha256 TEXT NOT NULL DEFAULT '',source_size INTEGER NOT NULL,source_mtime REAL NOT NULL,status TEXT NOT NULL DEFAULT 'active',manual_override INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL,updated REAL NOT NULL,UNIQUE(asset_id,origin));
+CREATE INDEX IF NOT EXISTS classifications_category ON classifications(status,category,asset_id);
+CREATE TABLE IF NOT EXISTS classification_queue(asset_id TEXT PRIMARY KEY REFERENCES assets(id),source_fingerprint TEXT NOT NULL,config_revision TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'waiting',created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS classification_waiting ON classification_queue(state,created);
+CREATE TABLE IF NOT EXISTS classification_attempts(input_sha256 TEXT PRIMARY KEY,task_id TEXT NOT NULL,created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS classification_budget ON classification_attempts(created);
 """
 
 
@@ -319,6 +325,8 @@ class Library:
                         time.time(),
                     ),
                 )
+            if classifier := getattr(self, "classifier", None):
+                classifier.on_index(db, asset_id, is_new=old is None)
         self.enqueue("preview", asset_id)
         return asset_id
 
@@ -516,6 +524,8 @@ class Library:
                     "UPDATE assets SET root_id=?,relative_path=?,name=?,mtime=?,preview='queued',error='' WHERE id=?",
                     (root["id"], relative, new_path.name, info.st_mtime, old["id"]),
                 )
+                if classifier := getattr(self, "classifier", None):
+                    classifier.on_index(db, old["id"], is_new=False)
                 db.execute(
                     "INSERT INTO asset_locations VALUES (?,?,?,?,?)",
                     (uid(), old["id"], str(old_path), str(new_path), time.time()),
@@ -533,6 +543,8 @@ class Library:
                     "UPDATE assets SET preview='missing',error='原文件不可访问' WHERE id=?",
                     (asset_id,),
                 )
+            if classifier := getattr(self, "classifier", None):
+                classifier.preview_ready(asset_id)
             return "原文件不可访问"
         output = self.data_dir / "cache" / (asset_id + ".jpg")
         staging = output.with_name(asset_id + "-" + uid() + ".partial.jpg")
@@ -613,6 +625,8 @@ class Library:
             return str(error)[:800]
         finally:
             staging.unlink(missing_ok=True)
+            if classifier := getattr(self, "classifier", None):
+                classifier.preview_ready(asset_id)
 
     def create_upload(self, relative_path, size, sha256, project, tags):
         relative_path = safe_relative(relative_path)
@@ -832,6 +846,8 @@ class Library:
                 cached.unlink(missing_ok=True)
             # Restore the user's current backup destination, not a potentially obsolete one.
             self.set_setting("backup", current_config)
+            if classifier := getattr(self, "classifier", None):
+                classifier.after_restore()
             for asset in self.query("SELECT id FROM assets"):
                 self.enqueue("preview", asset["id"])
             return {"safety_backup": safety_copy}

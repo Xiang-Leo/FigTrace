@@ -533,6 +533,8 @@ class AutoFigureService:
                     "UPDATE figures SET stage='draft' WHERE id=?",
                     (parent["figure_id"],),
                 )
+                if classifier := getattr(lib, "classifier", None):
+                    classifier.on_index(db, asset_id, is_new=True)
             lib.enqueue("preview", asset_id)
             return asset_id
 
@@ -610,6 +612,7 @@ def register_autofigure(app, lib, service):
             body = EditInput.model_validate_json(raw)
         except ValueError:
             raise HTTPException(422, "SVG 保存请求格式无效") from None
+
         def persist():
             service.svg(asset_id)
             return {

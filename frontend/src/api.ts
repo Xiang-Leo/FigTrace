@@ -55,6 +55,7 @@ export const when = (timestamp: number) =>
       })
     : "尚未运行";
 export type Asset = {
+  classifications?: ClassificationRecord[];
   derivations?: {
     parent_asset_id: string;
     kind: string;
@@ -90,6 +91,26 @@ export type Asset = {
   versions_list: Asset[];
   links: { id: string; path: string; label: string }[];
 };
+export type ClassificationRecord = {
+  id: string;
+  origin: "rules" | "ai";
+  category: string;
+  tags: string[];
+  description: string;
+  status: "active" | "dismissed";
+  manual_override: boolean;
+  created: number;
+  updated: number;
+};
+export const classificationCategories = [
+  "统计图表",
+  "流程与示意图",
+  "显微与实验图",
+  "照片与截图",
+  "文档",
+  "设计源文件",
+  "其他图片",
+];
 export const stageNames: Record<string, string> = {
   draft: "草稿",
   review: "待审核",

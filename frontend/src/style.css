@@ -1600,6 +1600,138 @@ progress::-webkit-progress-value {
   border-top: 1px solid var(--line);
   font-size: 11px;
 }
+.classification-workspace fieldset,
+.classification-record fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.classification-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 0;
+}
+.classification-intro svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--accent);
+}
+.classification-intro h3 {
+  margin: 0 0 8px;
+}
+.classification-intro p {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.classification-settings,
+.classification-batch {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+.classification-settings .check {
+  font-size: 14px;
+  color: var(--text);
+}
+.classification-settings p {
+  line-height: 1.7;
+}
+.classification-disclosure {
+  padding: 12px 14px;
+  background: var(--soft);
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.classification-limit {
+  max-width: 250px;
+  margin-top: 18px;
+}
+.classification-batch h3 {
+  margin-top: 0;
+}
+.classification-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 9px;
+}
+.classification-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.classification-badge small {
+  flex: none;
+  font-size: 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.classification-ai small {
+  color: var(--accent);
+}
+.classification-record {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+  margin-top: 14px;
+}
+.classification-record-heading {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
+.classification-record-heading > span {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  color: var(--accent);
+  font-size: 10px;
+}
+.classification-record h4 {
+  margin: 12px 0 8px;
+  font-size: 14px;
+}
+.classification-record p {
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.classification-record .button-row {
+  margin-top: 12px;
+}
+.classification-record label {
+  margin-top: 14px;
+}
+.classification-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.classification-tags span {
+  font-size: 10px;
+  background: var(--soft);
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+.classification-dismissed {
+  font-size: 11px;
+  color: var(--muted);
+}
+@media (max-width: 760px) {
+  .classification-settings,
+  .classification-batch {
+    padding: 15px;
+  }
+}
 .autofigure-convert {
   margin-top: 12px;
   padding: 14px;

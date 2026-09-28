@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, FolderPlus, Sparkles } from "lucide-react";
 import { api, json, when, stageNames } from "./api";
+import { AutomaticClassification } from "./Classification";
 
 type Project = {
   stages: Record<string, number>;
@@ -20,6 +21,7 @@ type Config = {
   clear_key?: boolean;
 };
 type Task = {
+  options?: { classification?: boolean; automatic?: boolean };
   title?: string;
   preview?: string;
   id: string;
@@ -384,13 +386,16 @@ export function AIWorkspace({
             t.kind === "analysis" &&
             (!assetIds.length || assetIds.includes(t.asset_id)),
         )
-      : tab === "generation"
-        ? tasks.filter((t) => t.kind === "generation")
-        : tasks;
+      : tab === "automatic"
+        ? tasks.filter((t) => t.options?.classification)
+        : tab === "generation"
+          ? tasks.filter((t) => t.kind === "generation")
+          : tasks;
   return (
     <Shell title="AI 工作台" onClose={onClose}>
       <div className="feature-tabs">
         {[
+          ["automatic", "自动整理"],
           ["analysis", "图片分类"],
           ["generation", "图片生成"],
           ["history", "任务记录"],
@@ -414,6 +419,15 @@ export function AIWorkspace({
         <p role="status" className="notice">
           {notice}
         </p>
+      )}
+      {tab === "automatic" && (
+        <AutomaticClassification
+          assetIds={assetIds}
+          initialProject={initialProject}
+          projects={projects}
+          onConfigure={() => setTab("config")}
+          onChange={onChange}
+        />
       )}
       {tab === "config" && configs && (
         <>
@@ -715,17 +729,23 @@ export function AIWorkspace({
               <div className="feature-header">
                 <strong>
                   {task.kind === "analysis"
-                    ? "分类 · " + (task.title || "图片")
+                    ? (task.options?.classification
+                        ? "自动整理 · "
+                        : "分类 · ") + (task.title || "图片")
                     : task.prompt.slice(0, 80)}
                 </strong>
-                <span>{taskStatus[task.status]}</span>
+                <span>
+                  {task.options?.classification && task.status === "completed"
+                    ? "分类已保存"
+                    : taskStatus[task.status]}
+                </span>
               </div>
               <p className="subtle">
                 {task.model} · {when(task.created)}
               </p>
               {task.error && <p className="error">{task.error}</p>}
               {task.kind === "analysis" &&
-                task.status !== "completed" &&
+                (task.status !== "completed" || task.options?.classification) &&
                 task.result.description && (
                   <details>
                     <summary>分类记录</summary>
@@ -735,22 +755,24 @@ export function AIWorkspace({
                     <p>{task.result.tags?.join("、")}</p>
                   </details>
                 )}
-              {task.kind === "analysis" && task.status === "completed" && (
-                <fieldset disabled={busy}>
-                  <Suggestion
-                    task={task}
-                    onApply={(tags, include_description) =>
-                      action(async () => {
-                        await api(
-                          "/ai/tasks/" + task.id + "/apply",
-                          json("POST", { tags, include_description }),
-                        );
-                        onChange(task.asset_id);
-                      })
-                    }
-                  />
-                </fieldset>
-              )}
+              {task.kind === "analysis" &&
+                task.status === "completed" &&
+                !task.options?.classification && (
+                  <fieldset disabled={busy}>
+                    <Suggestion
+                      task={task}
+                      onApply={(tags, include_description) =>
+                        action(async () => {
+                          await api(
+                            "/ai/tasks/" + task.id + "/apply",
+                            json("POST", { tags, include_description }),
+                          );
+                          onChange(task.asset_id);
+                        })
+                      }
+                    />
+                  </fieldset>
+                )}
               {task.kind === "generation" &&
                 task.status === "completed" &&
                 task.preview === "ready" &&
@@ -769,7 +791,8 @@ export function AIWorkspace({
                 )}
                 {(task.status === "queued" ||
                   (task.kind === "analysis" &&
-                    task.status === "completed")) && (
+                    task.status === "completed" &&
+                    !task.options?.classification)) && (
                   <button
                     disabled={busy}
                     onClick={() =>
