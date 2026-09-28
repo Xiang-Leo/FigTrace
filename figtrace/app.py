@@ -31,6 +31,7 @@ from .classification import (
 )
 from .features import AIService, register_features
 from .library import Library, uid
+from .storage import change_directory, overlaps, storage_info
 
 
 class Login(BaseModel):
@@ -81,6 +82,10 @@ class BackupInput(BaseModel):
     interval_hours: int = Field(default=24, ge=1, le=8760)
     keep: int = Field(default=7, ge=1, le=100)
     directory: str
+
+
+class StorageInput(BaseModel):
+    directory: str = Field(min_length=1, max_length=4096)
 
 
 def default_data_dir():
@@ -742,6 +747,22 @@ def create_app(
             "SELECT * FROM jobs ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,created DESC LIMIT 50"
         )
 
+    @app.get("/api/settings/storage")
+    def storage_settings():
+        return {**storage_info(library), "local_mode": local_mode}
+
+    @app.put("/api/settings/storage")
+    def save_storage_settings(body: StorageInput):
+        if not local_mode:
+            raise ValueError("远程图片存储目录由服务器管理员配置")
+        try:
+            result = change_directory(library, body.directory)
+        except OSError as error:
+            raise ValueError(
+                "无法复制到图片目录，请检查权限、磁盘空间和连接；存储位置未改变"
+            ) from error
+        return {**result, "local_mode": local_mode}
+
     @app.put("/api/settings/backup")
     def backup_settings(body: BackupInput):
         directory = Path(body.directory).expanduser().resolve()
@@ -757,7 +778,7 @@ def create_app(
             library.data_dir / "cache",
             library.data_dir / "originals",
             library.data_dir / "uploads",
-        ) or directory.is_relative_to(library.data_dir / "originals"):
+        ) or overlaps(directory, library.managed_directory()):
             raise ValueError("备份目录不能与素材或缓存目录重叠")
         directory.mkdir(parents=True, exist_ok=True)
         config = library.setting("backup")

@@ -1,0 +1,54 @@
+.storage-settings h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.storage-settings fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.storage-locations {
+  margin: 16px 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--soft);
+  border-radius: 8px;
+}
+.storage-locations dt {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+.storage-locations dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.storage-browse-actions {
+  margin-top: 10px;
+}
+.storage-browser {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.storage-browser > p {
+  overflow-wrap: anywhere;
+}
+.storage-directory-list {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+.storage-directory-list button {
+  justify-content: flex-start;
+  text-align: left;
+  overflow-wrap: anywhere;
+}

@@ -19,6 +19,8 @@ npm --prefix frontend run build
 
 侧栏「自动整理」支持导入时按文件名、目录和格式分类；配置视觉模型后，可开启导入后自动 AI 分类，或批量整理已有图库。分类结果直接参与搜索，无需逐张采纳，仍可随时修正。详见 [自动整理指南](docs/automatic-classification.md)。
 
+「设置与备份」中可单独设置[上传与生成图片的存储目录](docs/storage.md)。分类服务可选择 Chat Completions、Responses 或 Anthropic Messages 协议，配置步骤见 [AI 接口指南](docs/ai.md)。
+
 需要把已有示意图重建为可编辑 SVG，可按 [AutoFigure 接入指南](docs/autofigure-integration.md) 配置独立服务。转换结果和编辑结果都保存为可追溯的新版本；模型运行环境需单独准备，真实推理效果尚待验证。
 
 已确认的产品约束：支持 Windows、macOS、Linux，采用网页前端与独立后端；支持定期自动备份；覆盖 JPG、PNG、TIFF、PDF、AI、EPS、PSD 等常用素材；面向上千张图片的个人图库；原文件可位于本地或网盘目录，运行中的数据库保存在后端所在机器的本地磁盘。

@@ -196,14 +196,22 @@ class Library:
             self.allowed_roots is not None
             and not any(path.is_relative_to(root) for root in self.allowed_roots)
             and not path.is_relative_to(self.data_dir / "originals")
+            and not path.is_relative_to(self.managed_directory())
         ):
             raise ValueError("该目录不在服务器允许访问的素材目录内")
         return path
 
+    def managed_directory(self):
+        return Path(
+            self.one("SELECT path FROM roots WHERE id='managed'")["path"]
+        ).resolve()
+
     def excluded(self, path: Path):
         config = self.setting("backup")
-        return path.is_relative_to(self.data_dir) or path.is_relative_to(
-            Path(config["directory"]).expanduser().resolve()
+        return (
+            path.is_relative_to(self.data_dir)
+            or path.is_relative_to(self.managed_directory())
+            or path.is_relative_to(Path(config["directory"]).expanduser().resolve())
         )
 
     def enqueue(self, kind, target):
@@ -343,6 +351,7 @@ class Library:
         seen, skipped, errors = set(), 0, []
         discovered = []
         backup_dir = Path(self.setting("backup")["directory"]).expanduser().resolve()
+        managed_dir = self.managed_directory()
 
         def scan_error(error):
             errors.append(str(error))
@@ -357,6 +366,9 @@ class Library:
                 and not (Path(directory) / name).is_symlink()
                 and not (Path(directory) / name).resolve().is_relative_to(self.data_dir)
                 and not (Path(directory) / name).resolve().is_relative_to(backup_dir)
+                and not (Path(directory) / name)
+                .resolve()
+                .is_relative_to(managed_dir)
             ]
             for name in files:
                 if self.stop.is_set():
@@ -696,7 +708,10 @@ class Library:
             if fingerprint(temp) != row["sha256"]:
                 raise ValueError("文件内容校验失败，请重新上传原文件")
             ext = Path(row["relative_path"]).suffix.lstrip(".").lower()
-            destination = self.data_dir / "originals" / (row["sha256"] + "." + ext)
+            directory = self.managed_directory()
+            if not directory.is_dir():
+                raise ValueError("图片存储目录不可访问，请检查磁盘或网盘连接")
+            destination = directory / (row["sha256"] + "." + ext)
             duplicate = (
                 destination.exists() and fingerprint(destination) == row["sha256"]
             )
@@ -784,6 +799,7 @@ class Library:
             if self.query("SELECT id FROM autofigure_tasks WHERE status='running'"):
                 raise ValueError("AutoFigure 任务运行中，请完成后再恢复备份")
             current_config = self.setting("backup")
+            current_originals = self.managed_directory()
             source = Path(current_config["directory"]).expanduser().resolve() / name
             with (
                 zipfile.ZipFile(source) as archive,
@@ -837,7 +853,7 @@ class Library:
                 )
                 db.execute(
                     "UPDATE roots SET path=? WHERE id='managed'",
-                    (str(self.data_dir / "originals"),),
+                    (str(current_originals),),
                 )
                 db.execute("DELETE FROM jobs")
                 db.execute("DELETE FROM uploads")

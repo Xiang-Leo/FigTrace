@@ -494,7 +494,10 @@ class AutoFigureService:
                 (parent_id,),
             )
             asset_id = uid()
-            destination = lib.data_dir / "originals" / (digest + ".svg")
+            directory = lib.managed_directory()
+            if not directory.is_dir():
+                raise ValueError("图片存储目录不可访问，请检查磁盘或网盘连接")
+            destination = directory / (digest + ".svg")
             if not destination.exists():
                 staging = destination.with_name(uid() + ".partial")
                 try:
