@@ -19,6 +19,10 @@ import {
   ArrowUpRight,
   X,
   LogOut,
+  Tags,
+  Menu,
+  Sparkles,
+  ListTodo,
 } from "lucide-react";
 import { api, json, Asset, Overview, Root, ApiError, statusName } from "./api";
 import { stageNames, ProjectSummary } from "./api";
@@ -26,6 +30,9 @@ import { ImportDialog } from "./ImportDialog";
 import { Detail, Preview } from "./Detail";
 import { Settings } from "./Settings";
 import { ProjectManager, AIWorkspace } from "./Features";
+import { ClassificationBadge, ClassificationConfig } from "./Classification";
+import { classificationCategories } from "./api";
+import { BrandMark } from "./Brand";
 import "./style.css";
 
 function App() {
@@ -44,6 +51,8 @@ function App() {
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState({ type: "all", value: "" }),
     [stage, setStage] = useState(""),
+    [category, setCategory] = useState(""),
+    [categories, setCategories] = useState(classificationCategories),
     [projectInfo, setProjectInfo] = useState<ProjectSummary | null>(null),
     [grouped, setGrouped] = useState(true),
     [selected, setSelected] = useState<string | null>(null),
@@ -51,6 +60,7 @@ function App() {
     [loading, setLoading] = useState(false),
     [revision, setRevision] = useState(0);
   const [modal, setModal] = useState(""),
+    [navigationOpen, setNavigationOpen] = useState(false),
     [aiSelection, setAISelection] = useState<string[]>([]),
     [importMode, setImportMode] = useState("upload"),
     [relocate, setRelocate] = useState<Root | null>(null),
@@ -72,6 +82,18 @@ function App() {
       .then(setSession)
       .catch((e) => setError(e.message));
   }, []);
+  useEffect(() => {
+    if (!session?.authenticated) return;
+    let alive = true;
+    api<ClassificationConfig>("/classification/config")
+      .then((value) => {
+        if (alive) setCategories(value.categories);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [session?.authenticated]);
   useEffect(() => {
     const timer = setTimeout(() => {
       setQuery(search);
@@ -111,6 +133,7 @@ function App() {
       if (filter.type === "root") params.set("root_id", filter.value);
       if (filter.type === "pending") params.set("pending", "true");
       if (stage) params.set("stage", stage);
+      if (category) params.set("category", category);
       try {
         const [list, summary, projects] = await Promise.all([
           api("/assets?" + params),
@@ -135,7 +158,16 @@ function App() {
         if (request === requestVersion.current) setLoading(false);
       }
     },
-    [session?.authenticated, query, page, grouped, filter, revision, stage],
+    [
+      session?.authenticated,
+      query,
+      page,
+      grouped,
+      filter,
+      revision,
+      stage,
+      category,
+    ],
   );
   useEffect(() => {
     refresh();
@@ -146,10 +178,12 @@ function App() {
     setRevision((v) => v + 1);
   }
   function navigate(type: string, value = "") {
+    setNavigationOpen(false);
     setFilter({ type, value });
     setPage(1);
     setChecked(new Set());
     setStage("");
+    setCategory("");
     setProjectInfo(null);
   }
   function openImport(mode = "upload") {
@@ -230,7 +264,9 @@ function App() {
   if (!session)
     return (
       <div className="loading-screen">
-        <span className="brand">FigTrace</span>
+        <span className="brand">
+          <BrandMark />
+        </span>
         <p>{error || "正在连接图库…"}</p>
         {error && <button onClick={() => location.reload()}>重新连接</button>}
       </div>
@@ -239,7 +275,9 @@ function App() {
     return (
       <main className="login-page">
         <form onSubmit={login}>
-          <span className="brand">FigTrace</span>
+          <span className="brand">
+            <BrandMark />
+          </span>
           <h1>连接你的图库</h1>
           <p>输入服务器访问密码，开始整理你的 Figure。</p>
           <label>
@@ -266,17 +304,27 @@ function App() {
     );
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="/">
-          FigTrace
-          <span className="brand-dot" />
-        </a>
+      <aside className={`sidebar${navigationOpen ? " navigation-open" : ""}`}>
+        <div className="sidebar-header">
+          <a className="brand" href="/" aria-label="FigTrace 首页">
+            <BrandMark />
+          </a>
+          <button
+            className="navigation-toggle"
+            aria-controls="library-navigation"
+            aria-expanded={navigationOpen}
+            onClick={() => setNavigationOpen(!navigationOpen)}
+          >
+            {navigationOpen ? <X size={17} /> : <Menu size={17} />}
+            浏览图库
+          </button>
+        </div>
         <div className="library-label">
           <span className="connection-dot" />
           {session.local_mode ? "本机图库" : "服务器图库"}
           <small>LOCAL FIRST</small>
         </div>
-        <nav aria-label="主导航">
+        <nav id="library-navigation" aria-label="主导航">
           <button
             className={filter.type === "all" ? "active" : ""}
             onClick={() => navigate("all")}
@@ -293,29 +341,38 @@ function App() {
             <span>待整理</span>
             <small>{overview?.pending || 0}</small>
           </button>
-          <div className="nav-heading">项目</div>
-          <button onClick={() => setModal("projects")}>
-            <FolderPlus size={17} />
-            <span>项目管理</span>
-          </button>
-          {overview?.projects.length ? (
-            overview.projects.map((project) => (
-              <button
-                key={project}
-                className={
-                  filter.type === "project" && filter.value === project
-                    ? "active"
-                    : ""
-                }
-                onClick={() => navigate("project", project)}
-              >
-                <Folder size={16} />
-                <span>{project}</span>
-              </button>
-            ))
-          ) : (
-            <p className="nav-hint">在项目管理中创建第一个项目</p>
-          )}
+          <div className="nav-heading project-heading">
+            <span>项目</span>
+            <button
+              className="project-manage"
+              onClick={() => setModal("projects")}
+              aria-label="项目管理"
+              title="创建、编辑与归档项目"
+            >
+              <Settings2 size={13} />
+              管理
+            </button>
+          </div>
+          <div className="sidebar-project-list">
+            {overview?.projects.length ? (
+              overview.projects.map((project) => (
+                <button
+                  key={project}
+                  className={
+                    filter.type === "project" && filter.value === project
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() => navigate("project", project)}
+                >
+                  <Folder size={15} />
+                  <span>{project}</span>
+                </button>
+              ))
+            ) : (
+              <p className="nav-hint">创建项目，集中整理相关 Figure</p>
+            )}
+          </div>
           <div className="nav-heading">素材来源</div>
           {overview?.roots.map((root) => (
             <button
@@ -346,11 +403,21 @@ function App() {
         <div className="sidebar-bottom">
           <button
             onClick={() => {
+              setAISelection(Array.from(checked));
+              setModal("ai-automatic");
+            }}
+          >
+            <Tags size={17} />
+            自动整理
+          </button>
+          <button
+            onClick={() => {
               setAISelection([]);
               setModal("ai-generation");
             }}
           >
-            ✦ AI 生成
+            <Sparkles size={17} />
+            AI 生成
           </button>
           <button
             onClick={() => {
@@ -358,6 +425,7 @@ function App() {
               setModal("ai-config");
             }}
           >
+            <ListTodo size={17} />
             AI 设置与任务
           </button>
           <button onClick={() => setModal("settings")}>
@@ -465,6 +533,20 @@ function App() {
             折叠版本
           </label>
           <select
+            aria-label="筛选自动分类"
+            value={category}
+            onChange={(e) => {
+              setCategory(e.target.value);
+              setPage(1);
+              setChecked(new Set());
+            }}
+          >
+            <option value="">全部分类</option>
+            {categories.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+          <select
             aria-label="筛选 Figure 状态"
             value={stage}
             onChange={(e) => {
@@ -496,6 +578,14 @@ function App() {
             <div className="button-row">
               <span>已选 {checked.size} 项</span>
               <button onClick={() => setBulkOpen(true)}>批量整理</button>
+              <button
+                onClick={() => {
+                  setAISelection(Array.from(checked));
+                  setModal("ai-automatic");
+                }}
+              >
+                自动分类
+              </button>
               <button
                 onClick={() => {
                   setAISelection(Array.from(checked));
@@ -564,8 +654,12 @@ function App() {
                         : ""}
                       {!grouped ? " · " + asset.name : ""}
                     </span>
+                    <ClassificationBadge
+                      asset={asset}
+                      selectedCategory={category}
+                    />
                     <div className="asset-bottom">
-                      <span>{asset.project || "待整理"}</span>
+                      <span>{asset.project || "未分配项目"}</span>
                       <span className={"figure-stage stage-" + asset.stage}>
                         {stageNames[asset.stage]}
                       </span>
@@ -665,6 +759,10 @@ function App() {
           onAI={() => {
             setAISelection([selected]);
             setModal("ai-analysis");
+          }}
+          onAutomatic={() => {
+            setAISelection([selected]);
+            setModal("ai-automatic");
           }}
         />
       )}

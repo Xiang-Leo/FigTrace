@@ -49,6 +49,12 @@ CREATE INDEX IF NOT EXISTS ai_tasks_asset ON ai_tasks(asset_id);
 CREATE TABLE IF NOT EXISTS asset_locations(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),old_path TEXT NOT NULL,new_path TEXT NOT NULL,created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS autofigure_tasks(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'queued',remote_id TEXT NOT NULL DEFAULT '',output_asset_id TEXT,config TEXT NOT NULL,input_sha256 TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',message TEXT NOT NULL DEFAULT '',created REAL NOT NULL,updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS asset_derivations(request_id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),parent_asset_id TEXT NOT NULL REFERENCES assets(id),kind TEXT NOT NULL,sha256 TEXT NOT NULL,metadata TEXT NOT NULL DEFAULT '{}',created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS classifications(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES assets(id),origin TEXT NOT NULL,category TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',description TEXT NOT NULL DEFAULT '',source_fingerprint TEXT NOT NULL,source_sha256 TEXT NOT NULL DEFAULT '',source_size INTEGER NOT NULL,source_mtime REAL NOT NULL,status TEXT NOT NULL DEFAULT 'active',manual_override INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL,updated REAL NOT NULL,UNIQUE(asset_id,origin));
+CREATE INDEX IF NOT EXISTS classifications_category ON classifications(status,category,asset_id);
+CREATE TABLE IF NOT EXISTS classification_queue(asset_id TEXT PRIMARY KEY REFERENCES assets(id),source_fingerprint TEXT NOT NULL,config_revision TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'waiting',created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS classification_waiting ON classification_queue(state,created);
+CREATE TABLE IF NOT EXISTS classification_attempts(input_sha256 TEXT PRIMARY KEY,task_id TEXT NOT NULL,created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS classification_budget ON classification_attempts(created);
 """
 
 
@@ -190,14 +196,22 @@ class Library:
             self.allowed_roots is not None
             and not any(path.is_relative_to(root) for root in self.allowed_roots)
             and not path.is_relative_to(self.data_dir / "originals")
+            and not path.is_relative_to(self.managed_directory())
         ):
             raise ValueError("该目录不在服务器允许访问的素材目录内")
         return path
 
+    def managed_directory(self):
+        return Path(
+            self.one("SELECT path FROM roots WHERE id='managed'")["path"]
+        ).resolve()
+
     def excluded(self, path: Path):
         config = self.setting("backup")
-        return path.is_relative_to(self.data_dir) or path.is_relative_to(
-            Path(config["directory"]).expanduser().resolve()
+        return (
+            path.is_relative_to(self.data_dir)
+            or path.is_relative_to(self.managed_directory())
+            or path.is_relative_to(Path(config["directory"]).expanduser().resolve())
         )
 
     def enqueue(self, kind, target):
@@ -319,6 +333,8 @@ class Library:
                         time.time(),
                     ),
                 )
+            if classifier := getattr(self, "classifier", None):
+                classifier.on_index(db, asset_id, is_new=old is None)
         self.enqueue("preview", asset_id)
         return asset_id
 
@@ -335,6 +351,7 @@ class Library:
         seen, skipped, errors = set(), 0, []
         discovered = []
         backup_dir = Path(self.setting("backup")["directory"]).expanduser().resolve()
+        managed_dir = self.managed_directory()
 
         def scan_error(error):
             errors.append(str(error))
@@ -349,6 +366,9 @@ class Library:
                 and not (Path(directory) / name).is_symlink()
                 and not (Path(directory) / name).resolve().is_relative_to(self.data_dir)
                 and not (Path(directory) / name).resolve().is_relative_to(backup_dir)
+                and not (Path(directory) / name)
+                .resolve()
+                .is_relative_to(managed_dir)
             ]
             for name in files:
                 if self.stop.is_set():
@@ -516,6 +536,8 @@ class Library:
                     "UPDATE assets SET root_id=?,relative_path=?,name=?,mtime=?,preview='queued',error='' WHERE id=?",
                     (root["id"], relative, new_path.name, info.st_mtime, old["id"]),
                 )
+                if classifier := getattr(self, "classifier", None):
+                    classifier.on_index(db, old["id"], is_new=False)
                 db.execute(
                     "INSERT INTO asset_locations VALUES (?,?,?,?,?)",
                     (uid(), old["id"], str(old_path), str(new_path), time.time()),
@@ -533,6 +555,8 @@ class Library:
                     "UPDATE assets SET preview='missing',error='原文件不可访问' WHERE id=?",
                     (asset_id,),
                 )
+            if classifier := getattr(self, "classifier", None):
+                classifier.preview_ready(asset_id)
             return "原文件不可访问"
         output = self.data_dir / "cache" / (asset_id + ".jpg")
         staging = output.with_name(asset_id + "-" + uid() + ".partial.jpg")
@@ -613,6 +637,8 @@ class Library:
             return str(error)[:800]
         finally:
             staging.unlink(missing_ok=True)
+            if classifier := getattr(self, "classifier", None):
+                classifier.preview_ready(asset_id)
 
     def create_upload(self, relative_path, size, sha256, project, tags):
         relative_path = safe_relative(relative_path)
@@ -682,7 +708,10 @@ class Library:
             if fingerprint(temp) != row["sha256"]:
                 raise ValueError("文件内容校验失败，请重新上传原文件")
             ext = Path(row["relative_path"]).suffix.lstrip(".").lower()
-            destination = self.data_dir / "originals" / (row["sha256"] + "." + ext)
+            directory = self.managed_directory()
+            if not directory.is_dir():
+                raise ValueError("图片存储目录不可访问，请检查磁盘或网盘连接")
+            destination = directory / (row["sha256"] + "." + ext)
             duplicate = (
                 destination.exists() and fingerprint(destination) == row["sha256"]
             )
@@ -770,6 +799,7 @@ class Library:
             if self.query("SELECT id FROM autofigure_tasks WHERE status='running'"):
                 raise ValueError("AutoFigure 任务运行中，请完成后再恢复备份")
             current_config = self.setting("backup")
+            current_originals = self.managed_directory()
             source = Path(current_config["directory"]).expanduser().resolve() / name
             with (
                 zipfile.ZipFile(source) as archive,
@@ -823,7 +853,7 @@ class Library:
                 )
                 db.execute(
                     "UPDATE roots SET path=? WHERE id='managed'",
-                    (str(self.data_dir / "originals"),),
+                    (str(current_originals),),
                 )
                 db.execute("DELETE FROM jobs")
                 db.execute("DELETE FROM uploads")
@@ -832,6 +862,8 @@ class Library:
                 cached.unlink(missing_ok=True)
             # Restore the user's current backup destination, not a potentially obsolete one.
             self.set_setting("backup", current_config)
+            if classifier := getattr(self, "classifier", None):
+                classifier.after_restore()
             for asset in self.query("SELECT id FROM assets"):
                 self.enqueue("preview", asset["id"])
             return {"safety_backup": safety_copy}

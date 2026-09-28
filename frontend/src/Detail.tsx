@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api, json, size, when, statusName, stageNames, Asset } from "./api";
 import { AutoFigureTools } from "./AutoFigure";
+import { AssetClassifications } from "./Classification";
 
 export function Preview({
   asset,
@@ -66,12 +67,14 @@ export function Detail({
   onChange,
   onSelect,
   onAI,
+  onAutomatic,
 }: {
   id: string;
   onClose: () => void;
   onChange: () => void;
   onSelect: (id: string) => void;
   onAI: () => void;
+  onAutomatic: () => void;
 }) {
   const [asset, setAsset] = useState<Asset | null>(null),
     [error, setError] = useState(""),
@@ -114,6 +117,11 @@ export function Detail({
     const timer = setInterval(load, 2000);
     return () => clearInterval(timer);
   }, [id, asset?.preview]);
+  useEffect(() => {
+    if (tab !== "classification") return;
+    const timer = setInterval(load, 4000);
+    return () => clearInterval(timer);
+  }, [id, tab]);
   useEffect(() => {
     if (enlarged) big.current?.showModal();
     else big.current?.close();
@@ -254,6 +262,12 @@ export function Detail({
               信息
             </button>
             <button
+              aria-pressed={tab === "classification"}
+              onClick={() => setTab("classification")}
+            >
+              自动分类
+            </button>
+            <button
               aria-pressed={tab === "versions"}
               onClick={() => setTab("versions")}
             >
@@ -266,6 +280,16 @@ export function Detail({
               关联文件
             </button>
           </div>
+          {tab === "classification" && (
+            <AssetClassifications
+              asset={asset}
+              onAutomatic={onAutomatic}
+              onChange={() => {
+                void load();
+                onChange();
+              }}
+            />
+          )}
           {tab === "info" && (
             <form
               key={id + ":" + formKey}

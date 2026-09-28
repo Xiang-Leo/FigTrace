@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, FolderPlus, Sparkles } from "lucide-react";
 import { api, json, when, stageNames } from "./api";
+import { AutomaticClassification } from "./Classification";
 
 type Project = {
   stages: Record<string, number>;
@@ -13,6 +14,7 @@ type Project = {
   assets: number;
 };
 type Config = {
+  protocol?: "openai-completions" | "openai-responses" | "anthropic-messages";
   base_url: string;
   model: string;
   has_key: boolean;
@@ -20,6 +22,7 @@ type Config = {
   clear_key?: boolean;
 };
 type Task = {
+  options?: { classification?: boolean; automatic?: boolean };
   title?: string;
   preview?: string;
   id: string;
@@ -384,13 +387,16 @@ export function AIWorkspace({
             t.kind === "analysis" &&
             (!assetIds.length || assetIds.includes(t.asset_id)),
         )
-      : tab === "generation"
-        ? tasks.filter((t) => t.kind === "generation")
-        : tasks;
+      : tab === "automatic"
+        ? tasks.filter((t) => t.options?.classification)
+        : tab === "generation"
+          ? tasks.filter((t) => t.kind === "generation")
+          : tasks;
   return (
     <Shell title="AI 工作台" onClose={onClose}>
       <div className="feature-tabs">
         {[
+          ["automatic", "自动整理"],
           ["analysis", "图片分类"],
           ["generation", "图片生成"],
           ["history", "任务记录"],
@@ -415,12 +421,21 @@ export function AIWorkspace({
           {notice}
         </p>
       )}
+      {tab === "automatic" && (
+        <AutomaticClassification
+          assetIds={assetIds}
+          initialProject={initialProject}
+          projects={projects}
+          onConfigure={() => setTab("config")}
+          onChange={onChange}
+        />
+      )}
       {tab === "config" && configs && (
         <>
           <p className="subtle">
-            支持 OpenAI 或兼容接口。填写完整 Base URL（通常以 /v1
-            结尾）及服务商提供的模型
-            ID。密钥仅保存于后端本机文件，不返回浏览器、不纳入图库备份。
+            分类支持 OpenAI Chat Completions、Responses 和 Anthropic Messages
+            接口。按服务商文档选择协议、填写 Base URL（通常以 /v1 结尾）与模型
+            ID。密钥保存在后端，不返回浏览器、不纳入图库备份。
           </p>
           <div className="provider-grid">
             {["analysis", "generation"].map((kind) => {
@@ -441,12 +456,66 @@ export function AIWorkspace({
                         [kind]: result[kind],
                       }));
                       setNotice(
-                        "已保存。更换服务地址会清除旧密钥，请为新服务重新填写。",
+                        kind === "analysis"
+                          ? "分类服务已保存，自动 AI 分类已关闭；需要时请在自动整理中重新启用。更换地址需填写新服务密钥。"
+                          : "生成服务已保存。更换服务地址后请填写新服务密钥。",
                       );
                     });
                   }}
                 >
                   <h3>{kind === "analysis" ? "分类服务" : "图片生成服务"}</h3>
+                  {kind === "analysis" ? (
+                    <label>
+                      API 协议
+                      <select
+                        value={c.protocol || "openai-completions"}
+                        onChange={(e) => {
+                          const protocol = e.target.value as Config["protocol"];
+                          const defaultAddress =
+                            protocol === "anthropic-messages"
+                              ? "https://api.anthropic.com/v1"
+                              : "https://api.openai.com/v1";
+                          const replaceAddress = [
+                            "https://api.openai.com/v1",
+                            "https://api.anthropic.com/v1",
+                          ].includes(c.base_url.replace(/\/$/, ""));
+                          const addressChanged =
+                            replaceAddress && c.base_url !== defaultAddress;
+                          setConfigs({
+                            ...configs,
+                            [kind]: {
+                              ...c,
+                              protocol,
+                              ...(addressChanged
+                                ? {
+                                    base_url: defaultAddress,
+                                    api_key: "",
+                                    has_key: false,
+                                    clear_key: true,
+                                    model: "",
+                                  }
+                                : {}),
+                            },
+                          });
+                          setModels({ ...models, [kind]: [] });
+                        }}
+                      >
+                        <option value="openai-completions">
+                          openai-completions
+                        </option>
+                        <option value="openai-responses">
+                          openai-responses
+                        </option>
+                        <option value="anthropic-messages">
+                          anthropic-messages
+                        </option>
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="subtle">
+                      生成协议：OpenAI Images（兼容 /images/generations）。
+                    </p>
+                  )}
                   <label>
                     API Base URL
                     <input
@@ -494,7 +563,11 @@ export function AIWorkspace({
                       onChange={(e) =>
                         setConfigs({
                           ...configs,
-                          [kind]: { ...c, api_key: e.target.value },
+                          [kind]: {
+                            ...c,
+                            api_key: e.target.value,
+                            clear_key: false,
+                          },
                         })
                       }
                       placeholder={
@@ -532,9 +605,8 @@ export function AIWorkspace({
                           );
                           setModels({ ...models, [kind]: response.models });
                           setNotice(
-                            "已连接到已保存的服务，获取到 " +
-                              response.models.length +
-                              " 个模型。具体能力以服务商为准。",
+                            response.message ||
+                              "已读取模型列表，具体图片处理能力以服务商为准。",
                           );
                         })
                       }
@@ -544,9 +616,15 @@ export function AIWorkspace({
                   </div>
                   <p className="subtle">
                     {kind === "analysis"
-                      ? "使用 /chat/completions，发送图片预览。"
-                      : "使用 /images/generations，需返回 b64_json 图片。"}{" "}
-                    未填写尺寸与质量时使用服务默认值。
+                      ? c.protocol === "anthropic-messages"
+                        ? "使用 /messages，发送 JPEG 预览；需支持视觉输入的模型。"
+                        : c.protocol === "openai-responses"
+                          ? "使用 /responses，发送 JPEG 预览；需支持视觉输入的模型。"
+                          : "使用 /chat/completions，发送 JPEG 预览；需支持视觉输入的模型。"
+                      : "需返回 b64_json 图片。此生成入口不使用 Anthropic Messages。未填写尺寸与质量时采用服务默认值。"}
+                  </p>
+                  <p className="subtle">
+                    检查仅读取已保存服务的模型列表，不上传图片、不进行推理；未提供列表的服务可手动填写模型。
                   </p>
                 </form>
               );
@@ -568,7 +646,9 @@ export function AIWorkspace({
           </p>
           <p className="subtle">
             服务：{configs?.analysis.base_url} · 模型：
-            {configs?.analysis.model || "尚未配置"} · 按服务商规则计费
+            {configs?.analysis.model || "尚未配置"} · 协议：
+            {configs?.analysis.protocol || "openai-completions"} ·
+            按服务商规则计费
           </p>
           <button
             className="primary"
@@ -715,17 +795,23 @@ export function AIWorkspace({
               <div className="feature-header">
                 <strong>
                   {task.kind === "analysis"
-                    ? "分类 · " + (task.title || "图片")
+                    ? (task.options?.classification
+                        ? "自动整理 · "
+                        : "分类 · ") + (task.title || "图片")
                     : task.prompt.slice(0, 80)}
                 </strong>
-                <span>{taskStatus[task.status]}</span>
+                <span>
+                  {task.options?.classification && task.status === "completed"
+                    ? "分类已保存"
+                    : taskStatus[task.status]}
+                </span>
               </div>
               <p className="subtle">
                 {task.model} · {when(task.created)}
               </p>
               {task.error && <p className="error">{task.error}</p>}
               {task.kind === "analysis" &&
-                task.status !== "completed" &&
+                (task.status !== "completed" || task.options?.classification) &&
                 task.result.description && (
                   <details>
                     <summary>分类记录</summary>
@@ -735,22 +821,24 @@ export function AIWorkspace({
                     <p>{task.result.tags?.join("、")}</p>
                   </details>
                 )}
-              {task.kind === "analysis" && task.status === "completed" && (
-                <fieldset disabled={busy}>
-                  <Suggestion
-                    task={task}
-                    onApply={(tags, include_description) =>
-                      action(async () => {
-                        await api(
-                          "/ai/tasks/" + task.id + "/apply",
-                          json("POST", { tags, include_description }),
-                        );
-                        onChange(task.asset_id);
-                      })
-                    }
-                  />
-                </fieldset>
-              )}
+              {task.kind === "analysis" &&
+                task.status === "completed" &&
+                !task.options?.classification && (
+                  <fieldset disabled={busy}>
+                    <Suggestion
+                      task={task}
+                      onApply={(tags, include_description) =>
+                        action(async () => {
+                          await api(
+                            "/ai/tasks/" + task.id + "/apply",
+                            json("POST", { tags, include_description }),
+                          );
+                          onChange(task.asset_id);
+                        })
+                      }
+                    />
+                  </fieldset>
+                )}
               {task.kind === "generation" &&
                 task.status === "completed" &&
                 task.preview === "ready" &&
@@ -769,7 +857,8 @@ export function AIWorkspace({
                 )}
                 {(task.status === "queued" ||
                   (task.kind === "analysis" &&
-                    task.status === "completed")) && (
+                    task.status === "completed" &&
+                    !task.options?.classification)) && (
                   <button
                     disabled={busy}
                     onClick={() =>

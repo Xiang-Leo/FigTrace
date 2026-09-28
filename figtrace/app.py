@@ -20,9 +20,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .library import Library, uid
-from .features import AIService, register_features
 from .autofigure import AutoFigureService, register_autofigure
+from .classification import (
+    Classifier,
+    current_sql,
+    register_classification,
+)
+from .classification import (
+    decode as decode_classification,
+)
+from .features import AIService, register_features
+from .library import Library, uid
+from .storage import change_directory, overlaps, storage_info
 
 
 class Login(BaseModel):
@@ -75,6 +84,10 @@ class BackupInput(BaseModel):
     directory: str
 
 
+class StorageInput(BaseModel):
+    directory: str = Field(min_length=1, max_length=4096)
+
+
 def default_data_dir():
     if os.getenv("FIGTRACE_DATA_DIR"):
         return Path(os.environ["FIGTRACE_DATA_DIR"])
@@ -98,6 +111,7 @@ def create_app(
 ):
     library = Library(data_dir or default_data_dir(), allowed_roots)
     ai_service = AIService(library)
+    classifier = Classifier(library, ai_service)
     autofigure_service = AutoFigureService(library)
     password = password if password is not None else os.getenv("FIGTRACE_PASSWORD", "")
     if not local_mode and (not password or allowed_roots is None):
@@ -124,6 +138,8 @@ def create_app(
     )
     app.state.library = library
     app.state.ai_service = ai_service
+    app.state.classifier = classifier
+    register_classification(app, library, classifier)
     register_features(app, library, ai_service)
     app.state.autofigure_service = autofigure_service
     register_autofigure(app, library, autofigure_service)
@@ -242,7 +258,9 @@ def create_app(
             "assets": library.one("SELECT COUNT(*) AS count FROM assets")["count"],
             "figures": library.one("SELECT COUNT(*) AS count FROM figures")["count"],
             "pending": library.one(
-                "SELECT COUNT(*) AS count FROM figures WHERE project='' AND tags='[]'"
+                "SELECT COUNT(*) AS count FROM figures f WHERE f.project='' AND f.tags='[]' AND NOT EXISTS(SELECT 1 FROM classifications c JOIN assets a ON a.id=c.asset_id WHERE a.id=COALESCE(f.preferred,(SELECT id FROM assets v WHERE v.figure_id=f.id ORDER BY created LIMIT 1)) AND "
+                + current_sql()
+                + " AND (c.category<>'其他图片' OR c.manual_override=1))"
             )["count"],
             "projects": [
                 r["name"]
@@ -266,6 +284,7 @@ def create_app(
         root_id: str | None = None,
         pending: bool = False,
         stage: Literal["draft", "review", "final"] | None = None,
+        category: str | None = None,
         grouped: bool = True,
         page: int = Query(1, ge=1),
         limit: int = Query(48, ge=1, le=100),
@@ -278,9 +297,11 @@ def create_app(
                 + "%"
             )
             conditions.append(
-                "(f.title LIKE ? ESCAPE '\\' OR f.tags LIKE ? ESCAPE '\\' OR f.notes LIKE ? ESCAPE '\\' OR f.project LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM assets s WHERE s.figure_id=f.id AND (s.name LIKE ? ESCAPE '\\' OR s.relative_path LIKE ? ESCAPE '\\')))"
+                "(f.title LIKE ? ESCAPE '\\' OR f.tags LIKE ? ESCAPE '\\' OR f.notes LIKE ? ESCAPE '\\' OR f.project LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM assets s WHERE s.figure_id=f.id AND (s.name LIKE ? ESCAPE '\\' OR s.relative_path LIKE ? ESCAPE '\\')) OR EXISTS(SELECT 1 FROM classifications c JOIN assets s ON s.id=c.asset_id WHERE s.figure_id=f.id AND "
+                + current_sql(asset="s")
+                + " AND (c.category LIKE ? ESCAPE '\\' OR c.tags LIKE ? ESCAPE '\\' OR c.description LIKE ? ESCAPE '\\')))"
             )
-            params += [pattern] * 6
+            params += [pattern] * 9
         if project is not None:
             conditions.append("f.project=?")
             params.append(project)
@@ -293,7 +314,18 @@ def create_app(
             conditions.append("f.stage=?")
             params.append(stage)
         if pending:
-            conditions.append("f.project='' AND f.tags='[]'")
+            conditions.append(
+                "f.project='' AND f.tags='[]' AND NOT EXISTS(SELECT 1 FROM classifications c WHERE c.asset_id=a.id AND "
+                + current_sql()
+                + " AND (c.category<>'其他图片' OR c.manual_override=1))"
+            )
+        if category:
+            conditions.append(
+                "EXISTS(SELECT 1 FROM classifications c WHERE c.asset_id=a.id AND "
+                + current_sql()
+                + " AND c.category=?)"
+            )
+            params.append(category)
         if grouped:
             conditions.append(
                 "a.id=COALESCE(f.preferred,(SELECT id FROM assets x WHERE x.figure_id=f.id ORDER BY created LIMIT 1))"
@@ -312,6 +344,21 @@ def create_app(
         )
         for row in rows:
             row["tags"] = json.loads(row["tags"])
+            row["classifications"] = []
+        if rows:
+            ids = [row["id"] for row in rows]
+            classifications = library.query(
+                "SELECT c.* FROM classifications c JOIN assets a ON a.id=c.asset_id WHERE c.asset_id IN ("
+                + ",".join("?" for _ in ids)
+                + ") AND "
+                + current_sql(),
+                ids,
+            )
+            by_id = {row["id"]: row for row in rows}
+            for record in classifications:
+                by_id[record["asset_id"]]["classifications"].append(
+                    decode_classification(record)
+                )
         return {"items": rows, "total": count, "page": page, "limit": limit}
 
     @app.get("/api/assets/{asset_id}")
@@ -321,6 +368,7 @@ def create_app(
             (asset_id,),
         )
         asset["tags"] = json.loads(asset["tags"])
+        asset["classifications"] = classifier.records(asset_id)
         asset["versions_list"] = library.query(
             "SELECT * FROM assets WHERE figure_id=? ORDER BY created DESC",
             (asset["figure_id"],),
@@ -699,6 +747,22 @@ def create_app(
             "SELECT * FROM jobs ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,created DESC LIMIT 50"
         )
 
+    @app.get("/api/settings/storage")
+    def storage_settings():
+        return {**storage_info(library), "local_mode": local_mode}
+
+    @app.put("/api/settings/storage")
+    def save_storage_settings(body: StorageInput):
+        if not local_mode:
+            raise ValueError("远程图片存储目录由服务器管理员配置")
+        try:
+            result = change_directory(library, body.directory)
+        except OSError as error:
+            raise ValueError(
+                "无法复制到图片目录，请检查权限、磁盘空间和连接；存储位置未改变"
+            ) from error
+        return {**result, "local_mode": local_mode}
+
     @app.put("/api/settings/backup")
     def backup_settings(body: BackupInput):
         directory = Path(body.directory).expanduser().resolve()
@@ -714,7 +778,7 @@ def create_app(
             library.data_dir / "cache",
             library.data_dir / "originals",
             library.data_dir / "uploads",
-        ) or directory.is_relative_to(library.data_dir / "originals"):
+        ) or overlaps(directory, library.managed_directory()):
             raise ValueError("备份目录不能与素材或缓存目录重叠")
         directory.mkdir(parents=True, exist_ok=True)
         config = library.setting("backup")
