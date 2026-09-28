@@ -1,0 +1,15 @@
+services:
+  figtrace:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      FIGTRACE_PASSWORD: ${FIGTRACE_PASSWORD:?Set a private password in your environment or .env}
+      FIGTRACE_HOSTS: ${FIGTRACE_HOSTS:-localhost,127.0.0.1}
+      FIGTRACE_ALLOWED_ROOTS: /sources
+    volumes:
+      - figtrace-data:/data
+      - ${FIGTRACE_SOURCE_DIR:-./sources}:/sources:ro
+    restart: unless-stopped
+volumes:
+  figtrace-data:
